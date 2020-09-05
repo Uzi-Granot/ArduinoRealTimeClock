@@ -12,16 +12,41 @@
 //  You must read this document and agree
 //	with the conditions specified in order to use this software.
 //
+//	Source Code and Executable Files can be used in commercial applications;
+//	Source Code and Executable Files can be redistributed; and
+//	Source Code can be modified to create derivative works.
+//	No claim of suitability, guarantee, or any warranty whatsoever is
+//	provided. The software is provided "as-is".
+//	The Article accompanying the Work may not be distributed or republished
+//	without the Author's consent
+//
 //	Version History:
 //
 //	Version 1.0 2020/08/12
 //		Original revision
+//	Version 1.1 2020/09/03
+//		change of #include file Adafruit_MonoOLED.h
+//    /* original include */
+//    #include <Adafruit_I2CDevice.h>
+//    #include <Adafruit_SPIDevice.h>
+//    /* modified include */
+//    #include <..\Adafruit BusIO\Adafruit_I2CDevice.h>
+//    #include <..\Adafruit BusIO\Adafruit_SPIDevice.h>
+//	Version 1.2 2020/09/04
+//		Daylight saving time 
+//		Restore #include file Adafruit_MonoOLED.h to original
+//    Add following include to main.cpp
+//    #include <Adafruit_I2CDevice.h>
+//    #include <Adafruit_SPIDevice.h>
+//    
 /////////////////////////////////////////////////////////////////////
 
 #include <EEPROM.h>
 #include <SPI.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
+#include <Adafruit_I2CDevice.h>
+#include <Adafruit_SPIDevice.h>
 #include <Adafruit_SSD1306.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
@@ -41,10 +66,19 @@
 #define EEPROM_ALARM_HOUR 2
 #define EEPROM_ALARM_LENGTH 3
 
+#define MAIN_MENU_ALARM 0
+#define MAIN_MENU_DATE_TIME 1
+#define MAIN_MENU_DAYLIGHT 2
+#define MAIN_MENU_DISP_STYLE 3
+
 #define DATE_FORMAT_YMD 0
 #define DATE_FORMAT_DMY 1
 #define DATE_FORMAT_MDY 2
 #define DATE_FORMAT_MASK 3
+
+#define DAYLIGHT_CANCEL 0
+#define DAYLIGHT_SPRING 1
+#define DAYLIGHT_FALL 2
 
 #define TIME_FORMAT_24 0
 #define TIME_FORMAT_12 1
@@ -76,12 +110,15 @@
 #define SETUP_MINUTE 9
 #define SETUP_DATE_TIME_END 10
 
-#define SETUP_FORMAT_START 10
-#define SETUP_DATE_STYLE 10
-#define SETUP_TIME_STYLE 11
-#define SETUP_TEMP_UNIT 12
-#define SETUP_FORMAT_END 13
-#define SETUP_COUNT 13
+#define SETUP_DAYLIGHT_START 10
+#define SETUP_DAYLIGHT_END 11
+
+#define SETUP_FORMAT_START 11
+#define SETUP_DATE_STYLE 11
+#define SETUP_TIME_STYLE 12
+#define SETUP_TEMP_UNIT 13
+#define SETUP_FORMAT_END 14
+#define SETUP_COUNT 15
 
 #define STATE_CLOCK 0
 #define STATE_SET_MENU 1
@@ -102,13 +139,14 @@ void drawText(byte x_pos, byte y_pos, char *text, byte text_size);
 void drawText(byte x_pos, byte y_pos, const char* text, byte text_size, bool highlight);
 void drawText(byte y_pos, const char* text, byte text_size, bool highlight);
 void displayClock();
-void setClockModule();
+void setClockModule(bool setDaylight);
 void saveDisplayFormat();
 void saveAlarmParameters();
 void displaySetupMenu();
 void displaySetupMenuParameters();
 void drawMainMenuParam();
 void drawAlarmOnOffMenu();
+void drawDaylightMenu();
 void drawDateStyleMenu();
 void drawTimeStyleMenu();
 void drawTempUnitMenu();
@@ -148,7 +186,7 @@ byte alarmLength;
 byte alarmState;
 unsigned long alarmTimer;
 
-byte submenu; // 0 to 2
+byte submenu; // 0 to 3
 byte second; // 0 to 59
 byte minute; // 0 to 59
 byte hour; // 0 to 23
@@ -156,6 +194,8 @@ byte dayOfWeek; // 1-sunday to 7-saturday
 byte day; // 1 to last day of the month
 byte month; // 1 to 12
 byte year; // 0 to 99
+
+byte daylight;
 
 byte state;
 byte buttonsState;
@@ -180,7 +220,7 @@ char dayText[7][10] =
   };
 
 // parameter maximum value
-byte paramMax[SETUP_COUNT] = {2, 1, 23, 59, 99, 99, 12, 31, 23, 59, 2, 1, 1};
+byte paramMax[SETUP_COUNT] = {3, 1, 23, 59, 99, 99, 12, 31, 23, 59, 2, 2, 1, 1};
 
 // save text strings in program memory
 const PROGMEM char SetupStr1[] = {"CLOCK"};
@@ -192,7 +232,13 @@ const PROGMEM char UziGranot[] = {" By: Uzi Granot "};
 const PROGMEM char selectMenuHeading[] = {"SELECT MENU"};
 const PROGMEM char selectMenuAlarm[] = {" 1. ALARM CLOCK "};
 const PROGMEM char selectMenuDateTime[] = {" 2. DATE TIME "};
-const PROGMEM char selectMenuDispStyle[] = {" 3. DISP STYLE "};
+const PROGMEM char selectMenuDaylight[] = {" 3. DAYLIGHT "};
+const PROGMEM char selectMenuDispStyle[] = {" 4. DISP STYLE "};
+
+const PROGMEM char DaylightMenuHeading[] = {"DAYLIGHT ADJUST"};
+const PROGMEM char DaylightMenuCancel[] = {" CANCEL  "};
+const PROGMEM char DaylightMenuSpring[] = {" SPRING +1 HOUR "};
+const PROGMEM char DaylightMenuFall[] = {" FALL -1 HOUR  "};
 
 const PROGMEM char alarmOnOffMenuHeading[] = {"ALARM CLOCK"};
 const PROGMEM char alarmOnOffMenuOff[] = {" 1. ALARM OFF "};
@@ -316,11 +362,12 @@ void loop()
     {
     // normal state
     case STATE_CLOCK:
-      // display normal clock plus temperature screen
+      // read clock module and display normal clock plus temperature screen
       displayClock();
 
       // set button is not pressed
-      if((buttonsState & BUTTON_SET) == 0) return;
+      // and daylight set is not active
+      if((buttonsState & BUTTON_SET) == 0 || daylight != DAYLIGHT_CANCEL) return;
 
       // set button is pressed
       // save current time
@@ -399,9 +446,23 @@ void loop()
         // main menu exit
         if(setupIndex == SETUP_SUB_MENU)
           {
-          if(submenu == 0) setupIndex = SETUP_ALARM_START;
-          else if(submenu == 1) setupIndex = SETUP_DATE_TIME_START;
-          else setupIndex = SETUP_FORMAT_START;
+          if(submenu == MAIN_MENU_ALARM)
+            {
+            setupIndex = SETUP_ALARM_START;
+            }
+          else if(submenu == MAIN_MENU_DATE_TIME)
+            {
+            setupIndex = SETUP_DATE_TIME_START;
+            }
+          else if(submenu == MAIN_MENU_DAYLIGHT)
+            {
+            daylight = DAYLIGHT_CANCEL;
+            setupIndex = SETUP_DAYLIGHT_START;
+            }
+          else
+            {
+            setupIndex = SETUP_FORMAT_START;
+            }
           state = STATE_DISP_MENU;
           return;
           }
@@ -424,7 +485,14 @@ void loop()
         if(setupIndex == SETUP_DATE_TIME_END)
           {
           // upload new date ant time to clock module
-          setClockModule();
+          setClockModule(false);
+          state = STATE_CLOCK;
+          return;
+          }
+
+        // daylight setup is done
+        if(setupIndex == SETUP_DAYLIGHT_END)
+          {
           state = STATE_CLOCK;
           return;
           }
@@ -516,6 +584,17 @@ void displayClock()
   day = readRS3231();
   month = readRS3231();
   year = readRS3231();
+
+  // daylight saving time adjustment
+  if(daylight != DAYLIGHT_CANCEL)
+    {
+    // make sure adjustment is not done in the last 3 seconds of an hour
+    if(minute < 59 && second < 57)
+      {
+      setClockModule(true);
+      daylight = DAYLIGHT_CANCEL;
+      }
+    }
 
   // get temperature
   // Start I2C protocol with DS3231 address and register 17
@@ -721,13 +800,86 @@ void displayClock()
 /////////////////////////////////////////////////////////////////////////
 // set clock module parameters after user setup
 /////////////////////////////////////////////////////////////////////////
-void setClockModule()
+void setClockModule
+    (
+    bool setDaylight  
+    )
   {
   // Write data to DS3231 RTC
   Wire.beginTransmission(0x68); // Start I2C protocol with DS3231 address
-  Wire.write(0);                // Send register address
-  Wire.write(0);                // Reset sesonds and start oscillator
-  writeRS3231(minute);          // Write minute
+  if(setDaylight)
+    {
+    // last day of the month
+    byte lastDay = lastDayOfMonth[month];
+    if(month == 2 && (year % 4) == 0) lastDay++;
+
+    // daylight +1 hour adjustment
+    if(daylight == DAYLIGHT_SPRING)
+      {
+      if(hour == 23)
+        {
+        hour = 0;
+        if(day == lastDay)
+          {
+          day = 1;
+          if(month == 12)
+            {
+            month = 1;
+            if(year < 99) year++;
+            }
+          else
+            {
+            month++;
+            }
+          }
+        else
+          {
+          day++;
+          }
+        }
+      else
+        {
+        hour++;
+        }
+      }
+
+    // daylight +1 hour adjustment
+    else
+      {
+      if(hour == 0)
+        {
+        hour = 23;
+        if(day == 1)
+          {
+          if(month == 1)
+            {
+            month = 12;
+            if(year > 0) year--;
+            }
+          else
+            {
+            month--;
+            }
+          day = lastDay;
+          }
+        else
+          {
+          day--;
+          }
+        }
+      else
+        {
+        hour--;
+        }
+      }
+    Wire.write(2);              // Send register address (hour)
+    }
+  else
+    {
+    Wire.write(0);              // Send register address (seconds)
+    Wire.write(0);              // Reset seconds
+    writeRS3231(minute);        // Write minute
+    }
   writeRS3231(hour);            // Write hour
   dayOfWeek = dayOfTheWeek();   // calculate day of the week from date
   writeRS3231(dayOfWeek);       // Write day of the week
@@ -803,7 +955,7 @@ void displaySetupMenu()
     {
     case SETUP_SUB_MENU:
       drawText(0, selectMenuHeading, 1, false);
-      submenu = 0;
+      submenu = MAIN_MENU_ALARM;
       drawMainMenuParam();
       paramPtr = &submenu;
       return;
@@ -814,6 +966,12 @@ void displaySetupMenu()
       paramPtr = &alarmSet;
       return;
 
+    case SETUP_DAYLIGHT_START:
+      drawText(0, DaylightMenuHeading, 1, false);
+      drawDaylightMenu();
+      paramPtr = &daylight;
+      return;
+      
     case SETUP_DATE_STYLE:
       if(dateStyle > 2) dateStyle = 0;
       drawText(0, dateStyleMenuHeading, 1, false);
@@ -905,6 +1063,10 @@ void displaySetupMenuParameters()
       drawAlarmOnOffMenu();
       return;
 
+    case SETUP_DAYLIGHT_START:
+      drawDaylightMenu();
+      return;
+
     case SETUP_DATE_STYLE:
       drawDateStyleMenu();
       return;
@@ -956,9 +1118,10 @@ void displaySetupMenuParameters()
 /////////////////////////////////////////////////////////////////////////
 void drawMainMenuParam()
   {
-  drawText(13, 28, selectMenuAlarm, 1, submenu == 0);
-  drawText(13, 40, selectMenuDateTime, 1, submenu == 1);
-  drawText(13, 52, selectMenuDispStyle, 1, submenu == 2);
+  drawText(13, 16, selectMenuAlarm, 1, submenu == MAIN_MENU_ALARM);
+  drawText(13, 28, selectMenuDateTime, 1, submenu == MAIN_MENU_DATE_TIME);
+  drawText(13, 40, selectMenuDaylight, 1, submenu == MAIN_MENU_DAYLIGHT);
+  drawText(13, 52, selectMenuDispStyle, 1, submenu == MAIN_MENU_DISP_STYLE);
   display.display();
   return;
   }
@@ -970,6 +1133,18 @@ void drawAlarmOnOffMenu()
   {
   drawText(19, 28, alarmOnOffMenuOff, 1, alarmSet == 0);
   drawText(19, 40, alarmOnOffMenuOn, 1, alarmSet == 1);
+  display.display();
+  return;
+  }
+
+/////////////////////////////////////////////////////////////////////////
+// draw daylight saving time
+/////////////////////////////////////////////////////////////////////////
+void drawDaylightMenu()
+  {
+  drawText(19, 28, DaylightMenuCancel, 1, daylight == DAYLIGHT_CANCEL);
+  drawText(19, 40, DaylightMenuSpring, 1, daylight == DAYLIGHT_SPRING);
+  drawText(19, 52, DaylightMenuFall, 1, daylight == DAYLIGHT_FALL);
   display.display();
   return;
   }

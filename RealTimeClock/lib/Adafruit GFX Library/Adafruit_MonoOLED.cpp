@@ -17,8 +17,8 @@
 
 #if !defined(__AVR_ATtiny85__) // Not for ATtiny, at all
 
-#include "Adafruit_MonoOLED.h"
-#include <Adafruit_GFX.h>
+#include <Adafruit_MonoOLED.h>
+//#include <Adafruit_GFX.h>
 
 // SOME DEFINES AND STATIC VARIABLES USED INTERNALLY -----------------------
 
